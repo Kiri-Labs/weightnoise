@@ -97,11 +97,11 @@ class NoisePruner:
                 m, n = w.shape
 
                 if method == "magnitude":
-                    n_keep = max(1, int(w.numel() * keep_ratio))
-                    pos = max(1, w.numel() - n_keep)
-                    flat = w.abs().flatten()
-                    threshold_val = flat.kthvalue(pos).values.item()
-                    mask = w.abs() >= threshold_val
+                    # Per-row: keep top-k weights in each output row
+                    n_keep_per_row = max(1, int(w.numel() / w.shape[0] * keep_ratio))
+                    flat = w.abs()
+                    thresh = flat.kthvalue(max(1, w.shape[1] - n_keep_per_row), dim=1, keepdim=True).values
+                    mask = flat >= thresh
                     param.data.copy_(w * mask)
 
                 elif method == "spectral":
@@ -114,24 +114,24 @@ class NoisePruner:
                         reconstructed = (U_k * S_k.unsqueeze(0)) @ Vh_k
                         param.data.copy_(reconstructed)
                     except Exception:
-                        # Fallback to magnitude
-                        flat = w.abs().flatten()
-                        n_keep = max(1, int(w.numel() * keep_ratio))
-                        pos = max(1, w.numel() - n_keep)
-                        thresh = flat.kthvalue(pos).values.item()
-                        param.data.copy_(w * (w.abs() >= thresh))
+                        # Fallback to row-wise magnitude pruning
+                        flat = w.abs()
+                        n_keep_per_row = max(1, int(w.shape[1] * keep_ratio))
+                        thresh = flat.kthvalue(max(1, w.shape[1] - n_keep_per_row), dim=1, keepdim=True).values
+                        param.data.copy_(w * (flat >= thresh))
 
                 elif method == "wanda":
+                    # Wanda: per-output pruning with weight x activation_norm
                     if name in activations:
                         act_norm = activations[name].norm(dim=-1, keepdim=True)
                     else:
-                        act_norm = torch.ones((1, 1), device=w.device)
+                        act_norm = torch.ones((1, w.shape[0]), device=w.device)
 
+                    # Per-output (row-wise): each output neuron keeps top-k inputs
                     scores = w.abs() * act_norm
-                    n_keep = max(1, int(w.numel() * keep_ratio))
-                    pos = max(1, w.numel() - n_keep)
-                    thresh_val = scores.flatten().kthvalue(pos).values.item()
-                    mask = scores >= thresh_val
+                    n_keep_per_row = max(1, int(scores.shape[1] * keep_ratio))
+                    thresh = scores.kthvalue(max(1, scores.shape[1] - n_keep_per_row), dim=1, keepdim=True).values
+                    mask = scores >= thresh
                     param.data.copy_(w * mask)
 
                 removed = (param.data == 0).sum().item() if method in ("magnitude", "wanda") else 0

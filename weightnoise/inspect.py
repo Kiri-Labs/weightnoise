@@ -173,16 +173,18 @@ class NoiseInspector:
                     # Low score = low impact on output = noise-like.
                     col_norms = np.linalg.norm(w, axis=0, keepdims=True)
                     importance_scores = np.abs(w) * col_norms
-                    # Absolute threshold: scores below 1% of max score = noise
-                    max_score = importance_scores.max()
-                    if max_score > 1e-12:
-                        low_importance_pct = 100.0 * (importance_scores < 0.01 * max_score).mean()
-                        # Also compute relative: score in bottom decile
-                        decile_thresh = np.percentile(importance_scores, 10)
-                        bottom_decile_pct = 100.0 * (importance_scores < decile_thresh).mean()
+                    # Per-row (per output neuron): fraction of inputs in each row
+                    # that have scores below 1% of the row's max score
+                    row_max = importance_scores.max(axis=1, keepdims=True)
+                    # Avoid division by zero: filter rows with zero max
+                    valid_rows = row_max[:, 0] > 1e-12
+                    if valid_rows.any():
+                        relative_scores = importance_scores / np.where(row_max > 1e-12, row_max, 1.0)
+                        # Noise = scores below 1% of row max
+                        noise_i = (relative_scores < 0.01).astype(float)
+                        low_importance_pct = 100.0 * noise_i.mean()
                     else:
                         low_importance_pct = 0.0
-                        bottom_decile_pct = 0.0
                 else:
                     noise_sv_pct = 0.0
                     noise_energy_pct = 0.0
@@ -210,7 +212,6 @@ class NoiseInspector:
                     "eff_rank_pct": round(eff_rank_pct, 1),
                     "near_zero_pct": round(near_zero_pct, 1),
                     "low_importance_pct": round(low_importance_pct, 1),
-                    "bottom_decile_pct": round(bottom_decile_pct, 1),
                     "param_count": w.size,
                 }
                 layer_result["matrices"][name] = mat_result
