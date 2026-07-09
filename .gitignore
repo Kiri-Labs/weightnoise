@@ -1,1 +1,7 @@
-ok
+*.pyc
+__pycache__/
+*.egg-info/
+.DS_Store
+dist/
+build/
+*.egg/
