@@ -6,6 +6,8 @@ weightnoise/__main__.py
 weightnoise/inspect.py
 weightnoise/planner.py
 weightnoise/prune.py
+weightnoise/stitch.py
+weightnoise/stream.py
 weightnoise/visualize.py
 weightnoise.egg-info/PKG-INFO
 weightnoise.egg-info/SOURCES.txt

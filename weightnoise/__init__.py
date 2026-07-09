@@ -7,4 +7,4 @@ Usage:
   weightnoise prune Qwen/Qwen3.5-0.8B --method spectral --threshold 0.1
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

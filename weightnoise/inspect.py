@@ -164,7 +164,8 @@ class NoiseInspector:
                 # === Key noise metrics ===
                 if len(s) > 0 and s[0] > 0:
                     # 1. Spectral noise ratio: singular values below noise floor
-                    noise_floor = threshold * s[0]
+                    spectral_threshold = threshold if threshold is not None else 0.01
+                    noise_floor = spectral_threshold * s[0]
                     noise_svs = (s < noise_floor).sum()
                     noise_sv_pct = 100.0 * noise_svs / len(s)
 
