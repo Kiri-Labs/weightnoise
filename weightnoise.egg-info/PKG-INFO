@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: weightnoise
-Version: 0.1.0
+Version: 0.2.0
 Summary: Visualize and remove noise from neural network weights. Shows exactly which weights carry signal vs noise, with interactive visualization.
 Author: Kiri Labs
 License: MIT
@@ -12,11 +12,13 @@ Classifier: Programming Language :: Python :: 3
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: torch>=2.0.0
 Requires-Dist: transformers>=4.30.0
 Requires-Dist: numpy>=1.24.0
 Requires-Dist: rich>=13.0.0
 Requires-Dist: huggingface-hub>=0.20.0
+Dynamic: license-file
 
 # weightnoise
 
@@ -38,14 +40,18 @@ Requires PyTorch 2.0+ and 4GB RAM (for models up to ~1B parameters on CPU).
 # Full noise report
 weightnoise inspect distilgpt2
 
+# Compression plan (with hardware target recommendations)
+weightnoise plan Qwen/Qwen3.5-0.8B
+
+# Compare two models (detect WIT transfer quality)
+weightnoise compare Qwen/Qwen3.6-27B KiriLabs/WIT-CrossSize-Transport
+
+# Remove noise at different levels
+weightnoise prune distilgpt2 --keep 0.9 --method wanda
+weightnoise prune distilgpt2 --keep 0.5 --method spectral
+
 # Detailed layer view
 weightnoise inspect distilgpt2 --layer 0
-
-# Remove noise (prune 50% of low-importance weights)
-weightnoise prune distilgpt2 --keep 0.5 --method wanda
-
-# Spectral pruning (SVD truncation)
-weightnoise prune distilgpt2 --keep 0.5 --method spectral
 ```
 
 ## How Noise Is Measured

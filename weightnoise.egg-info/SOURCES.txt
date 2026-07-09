@@ -1,8 +1,10 @@
+LICENSE
 README.md
 pyproject.toml
 weightnoise/__init__.py
 weightnoise/__main__.py
 weightnoise/inspect.py
+weightnoise/planner.py
 weightnoise/prune.py
 weightnoise/visualize.py
 weightnoise.egg-info/PKG-INFO
