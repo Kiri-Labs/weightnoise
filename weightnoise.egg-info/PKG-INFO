@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: weightnoise
-Version: 0.4.0
+Version: 0.4.1
 Summary: Visualize and remove noise from neural network weights. Shows exactly which weights carry signal vs noise, with interactive visualization.
 Author: Kiri Labs
 License: MIT

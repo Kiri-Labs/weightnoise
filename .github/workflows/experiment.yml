@@ -1,5 +1,8 @@
 name: Run noise-pruning experiment
-on: [workflow_dispatch, push]
+on:
+  push:
+    branches: [run-experiment]
+  workflow_dispatch:
 jobs:
   prune:
     runs-on: ubuntu-latest
