@@ -18,14 +18,18 @@ Requires PyTorch 2.0+ and 4GB RAM (for models up to ~1B parameters on CPU).
 # Full noise report
 weightnoise inspect distilgpt2
 
+# Compression plan (with hardware target recommendations)
+weightnoise plan Qwen/Qwen3.5-0.8B
+
+# Compare two models (detect WIT transfer quality)
+weightnoise compare Qwen/Qwen3.6-27B KiriLabs/WIT-CrossSize-Transport
+
+# Remove noise at different levels
+weightnoise prune distilgpt2 --keep 0.9 --method wanda
+weightnoise prune distilgpt2 --keep 0.5 --method spectral
+
 # Detailed layer view
 weightnoise inspect distilgpt2 --layer 0
-
-# Remove noise (prune 50% of low-importance weights)
-weightnoise prune distilgpt2 --keep 0.5 --method wanda
-
-# Spectral pruning (SVD truncation)
-weightnoise prune distilgpt2 --keep 0.5 --method spectral
 ```
 
 ## How Noise Is Measured
