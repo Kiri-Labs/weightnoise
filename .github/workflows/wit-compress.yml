@@ -1,0 +1,201 @@
+name: WIT Compress 27B -> 0.8B
+on:
+  workflow_dispatch:
+
+jobs:
+  wit-compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install torch transformers huggingface_hub safetensors sentencepiece protobuf accelerate
+
+      - name: Run WIT compress
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+import os, json, torch, gc, time, sys
+HF_TOKEN = os.environ["HF_TOKEN"]
+os.environ["HF_TOKEN"] = HF_TOKEN
+from huggingface_hub import HfApi, hf_hub_download
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from safetensors import safe_open
+
+t0 = time.time()
+log = lambda msg: print(f"[{time.time()-t0:.0f}s] {msg}") or sys.stdout.flush()
+
+log("Loading student Qwen3.5-0.8B...")
+student = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen3.5-0.8B", torch_dtype=torch.float16, token=HF_TOKEN, low_cpu_mem_usage=True)
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B", token=HF_TOKEN)
+tokenizer.pad_token = tokenizer.eos_token
+
+cfg_t = AutoConfig.from_pretrained("Qwen/Qwen3.6-27B", token=HF_TOKEN).text_config
+cfg_s = AutoConfig.from_pretrained("Qwen/Qwen3.5-0.8B", token=HF_TOKEN).text_config
+d_t, n_t = cfg_t.hidden_size, cfg_t.num_hidden_layers
+d_s, n_s = cfg_s.hidden_size, cfg_s.num_hidden_layers
+ratio = n_t / n_s
+log(f"Teacher: {n_t}L d={d_t} | Student: {n_s}L d={d_s} | Ratio: {ratio:.1f}x")
+
+# Layer mapping
+mapping = {}
+for s_idx in range(n_s):
+    t_start = int(round(s_idx * ratio))
+    t_end = int(round((s_idx + 1) * ratio))
+    t_end = max(t_end, t_start + 1)
+    mapping[s_idx] = list(range(t_start, min(t_end, n_t)))
+
+# Get all teacher shards
+api = HfApi(token=HF_TOKEN)
+files = api.list_repo_files("Qwen/Qwen3.6-27B")
+shards = sorted([f for f in files if f.endswith(".safetensors")])
+log(f"Teacher shards: {len(shards)}")
+
+# Build layer->shard mapping
+log("Building shard index...")
+layer_shard = {}
+for shard_name in shards:
+    sp = hf_hub_download("Qwen/Qwen3.6-27B", shard_name, token=HF_TOKEN)
+    with safe_open(sp, framework="pt", device="cpu") as f:
+        for key in f.keys():
+            for p in key.split("."):
+                if p.isdigit() and int(p) < n_t:
+                    lidx = int(p)
+                    if lidx not in layer_shard:
+                        layer_shard[lidx] = shard_name
+    os.remove(sp)
+    gc.collect()
+log(f"Indexed {len(layer_shard)}/{n_t} layers")
+
+# Compose
+student_params = dict(student.named_parameters())
+n_stitched, n_skipped = 0, 0
+layer_times = []
+
+for s_idx in range(n_s):
+    lt0 = time.time()
+    t_indices = mapping[s_idx]
+    teacher_mats = {}
+    
+    for t_idx in t_indices:
+        shard_name = layer_shard.get(t_idx)
+        if not shard_name: continue
+        sp = hf_hub_download("Qwen/Qwen3.6-27B", shard_name, token=HF_TOKEN)
+        with safe_open(sp, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                if f"layers.{t_idx}." in key and key.endswith(".weight"):
+                    t = f.get_tensor(key)
+                    if t.ndim == 2:
+                        teacher_mats.setdefault(key, []).append(t.clone())
+        os.remove(sp)
+        gc.collect()
+    
+    for s_name, s_param in student_params.items():
+        if s_param.ndim != 2: continue
+        if f"layers.{s_idx}." not in s_name: continue
+        suffix = s_name.split(f"layers.{s_idx}.")[-1]
+        matches = [k for k in teacher_mats if k.endswith(suffix)]
+        if not matches: n_skipped += 1; continue
+        weights = teacher_mats[matches[0]]
+        if not weights: n_skipped += 1; continue
+        
+        composed = torch.mean(torch.stack([w.float() for w in weights]), dim=0)
+        out_dim, in_dim = s_param.shape
+        k = min(out_dim, in_dim)
+        U, S, V = torch.svd_lowrank(composed, q=k, niter=2)
+        projected = U[:out_dim, :k] @ torch.diag(S[:k]) @ V[:in_dim, :k].T
+        with torch.no_grad():
+            s_param.data.copy_(projected.to(s_param.dtype))
+        n_stitched += 1
+    
+    elapsed = time.time() - lt0
+    layer_times.append(elapsed)
+    log(f"Layer {s_idx+1}/{n_s}: {n_stitched} stitched ({elapsed:.1f}s)")
+
+avg_time = sum(layer_times)/len(layer_times)
+est_remaining = avg_time * (n_s - s_idx - 1) if 's_idx' in dir() else 0
+log(f"Composed: {n_stitched}/{n_stitched+n_skipped} matrices")
+
+# Save
+log("Saving model...")
+os.makedirs("/tmp/wit-model", exist_ok=True)
+student.save_pretrained("/tmp/wit-model")
+tokenizer.save_pretrained("/tmp/wit-model")
+
+# Upload
+log("Uploading to HF...")
+api.create_repo("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer", exist_ok=True, private=False)
+api.upload_folder(folder_path="/tmp/wit-model", repo_id="KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+
+# Model card
+log("Uploading model card...")
+card = f"""---
+tags:
+- wit
+- weight-space-intelligence-transfer
+- cross-architecture
+- qwen
+metrics:
+- compression
+---
+
+# Qwen3.6-WIT-27B-Transfer
+
+**Weight-Space Intelligence Transfer**: Qwen3.6-27B -> Qwen3.5-0.8B
+
+| Property | Value |
+|----------|-------|
+| Teacher | Qwen3.6-27B ({n_t}L, d={d_t}) |
+| Student | Qwen3.5-0.8B ({n_s}L, d={d_s}) |
+| Layer ratio | {ratio:.1f}x |
+| Matrices composed | {n_stitched} |
+| Compression | ~32x parameter reduction |
+
+## Method
+
+For each student layer:
+1. Mean-average weights from corresponding teacher layers
+2. SVD-project to student dimensions (truncates U and V)
+3. Inject into student model
+
+## Usage
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model = AutoModelForCausalLM.from_pretrained("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+tokenizer = AutoTokenizer.from_pretrained("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+```
+
+Research checkpoint — fine-tuning needed for production quality.
+
+## Related
+- [weightnoise](https://github.com/Kiri-Labs/weightnoise) — CLI tool for compression experiments
+- [WIT-CrossSize-Transport](https://huggingface.co/KiriLabs/WIT-CrossSize-Transport) — proof of concept
+"""
+api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md",
+                repo_id="KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+log("DONE!")
+print(f"https://huggingface.co/KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+PYEOF
+
+      - name: Verify
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 -c "
+from huggingface_hub import HfApi
+api = HfApi()
+info = api.model_info('KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer')
+files = [f.rfilename for f in info.siblings]
+print(f'Files uploaded: {len(files)}')
+for f in files:
+    print(f'  - {f}')
+"
