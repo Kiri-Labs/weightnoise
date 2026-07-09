@@ -1,5 +1,7 @@
 name: WIT Compress 27B -> 0.8B
 on:
+  push:
+    branches: [wit-run]
   workflow_dispatch:
 
 jobs:
