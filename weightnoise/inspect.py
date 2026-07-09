@@ -88,12 +88,16 @@ class NoiseInspector:
         """
         import warnings
         
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            dtype=torch.float32,
-            device_map=self.device,
-            trust_remote_code=self.trust_remote_code,
-        )
+        # Use device_map only when GPU available (avoids accelerate dependency on CPU)
+        kwargs = {
+            "dtype": torch.float32,
+            "trust_remote_code": self.trust_remote_code,
+        }
+        if self.device != "cpu":
+            kwargs["device_map"] = self.device
+        model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
+        if self.device == "cpu":
+            model = model.cpu()
 
         param_names = [n for n, _ in model.named_parameters()]
         layer_pattern = self._find_layer_pattern(param_names)

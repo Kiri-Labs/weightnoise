@@ -54,12 +54,12 @@ class NoisePruner:
         Returns:
             dict with pruning stats
         """
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            dtype=torch.float32,
-            device_map=self.device,
-            trust_remote_code=self.trust_remote_code,
-        )
+        kwargs = dict(dtype=torch.float32, trust_remote_code=self.trust_remote_code)
+        if self.device != "cpu":
+            kwargs["device_map"] = self.device
+        model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
+        if self.device == "cpu":
+            model = model.cpu()
 
         original_params = sum(p.numel() for p in model.parameters())
         total_removed = 0
