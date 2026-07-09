@@ -151,3 +151,15 @@ All thresholds in weightnoise are data-adaptive, computed from the model's own w
 ## License
 
 MIT
+
+## Compress (WIT Cross-Architecture Stitching)
+
+```bash
+# Compress a teacher into a student via spectral stitching
+weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B --save ./compressed
+
+# Stream teacher weights (no OOM on 100B models)
+weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B --stream --save ./compressed
+```
+
+This is the TRUE compression: mean-averaging + SVD projection physically changes matrix dimensions.

@@ -323,3 +323,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # compress
+    compress_p = sub.add_parser("compress", help="Compress teacher model into student via WIT spectral stitching")
+    compress_p.add_argument("teacher", help="Large teacher model")
+    compress_p.add_argument("student", help="Small student architecture")
+    compress_p.add_argument("--save", "-o", default=None, help="Save compressed model path")
+    compress_p.add_argument("--stream", action="store_true",
+                            help="Stream teacher weights shard-by-shard (avoids OOM for 100B+ models)")
+    compress_p.add_argument("--device", default="cpu", help="Device (cpu or cuda)")
+    compress_p.add_argument("--trust-remote-code", action="store_true",
+                            help="Trust remote code for custom architectures")
+
+
+    # compress
+    elif args.command == "compress":
+        from .stitch import compress as stitch_compress
+        
+        print(f"\n  Compressing teacher -> student")
+        print(f"  Teacher: {args.teacher}")
+        print(f"  Student: {args.student}")
+        result = stitch_compress(
+            args.teacher, args.student,
+            device=args.device,
+            trust_remote_code=args.trust_remote_code,
+            save_path=args.save,
+            streaming=args.stream,
+        )
+        
+        print(f"\n  Compression result:")
+        print(f"  Student params: {result['student_params_m']:.0f}M")
+        print(f"  Ratio: {result['compression_ratio']:.1f}x")
+        print(f"  Matrices stitched: {result['matrices_stitched']}")
+        if args.save:
+            print(f"  Saved to: {args.save}")
