@@ -1,0 +1,112 @@
+name: Run noise-pruning experiment
+on: [workflow_dispatch, push]
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install weightnoise huggingface_hub transformers torch
+
+      - name: Inspect + Prune + Upload to HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+import os, torch, json, gc
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import HfApi
+from weightnoise.inspect import NoiseInspector
+
+model_id = 'Qwen/Qwen3.5-0.8B'
+
+# Inspect
+inspector = NoiseInspector(model_id, device='cpu')
+results = inspector.analyze(threshold=0.01)
+s = results['summary']
+noise_pct = s['noise_percentage']
+print(f'Noise: {noise_pct:.1f}% ({s[\"estimated_noise_m\"]:.0f}M of {s[\"total_params_m\"]:.0f}M)')
+
+# Load for pruning
+model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+tokenizer.pad_token = tokenizer.eos_token
+
+# Baseline eval
+texts = [
+    'The future of AI depends on efficient models.',
+    'Language models understand context through attention.',
+    'Machine learning transforms how we process data.',
+]
+def eval_ppl(model, tokenizer, texts):
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for t in texts:
+            ids = tokenizer(t, return_tensors='pt').input_ids
+            loss = model(ids, labels=ids).loss.item()
+            losses.append(loss)
+    return float(torch.exp(torch.tensor(losses).mean()).item())
+
+base_ppl = eval_ppl(model, tokenizer, texts)
+print(f'Baseline PPL: {base_ppl:.2f}')
+
+# Prune at 10%
+with torch.no_grad():
+    for n, p in model.named_parameters():
+        if p.ndim != 2: continue
+        w = p.float()
+        norms = w.norm(dim=0, keepdim=True)
+        scores = w.abs() * norms
+        n_keep = max(1, int(scores.shape[1] * 0.9))
+        thresh = scores.kthvalue(max(1, scores.shape[1] - n_keep), dim=1, keepdim=True).values
+        p.data.copy_(w * (scores >= thresh).float())
+
+pruned_ppl = eval_ppl(model, tokenizer, texts)
+ratio = pruned_ppl / base_ppl
+quality = 'IMPROVED' if pruned_ppl <= base_ppl else 'DEGRADED'
+print(f'Pruned PPL: {pruned_ppl:.2f} ({ratio:.4f}x) [{quality}]')
+
+# Save + Upload
+os.makedirs('/tmp/model', exist_ok=True)
+model.save_pretrained('/tmp/model')
+tokenizer.save_pretrained('/tmp/model')
+
+api = HfApi(token=os.environ['HF_TOKEN'])
+api.create_repo('KiriLabs/Qwen3.5-0.8B-NoisePruned', exist_ok=True, private=False)
+api.upload_folder(folder_path='/tmp/model', repo_id='KiriLabs/Qwen3.5-0.8B-NoisePruned')
+
+# Model card
+card = f'''---
+tags:
+- noise-pruning
+- wanda
+- compression
+- weightnoise
+metrics:
+- perplexity
+---
+# Qwen3.5-0.8B-NoisePruned
+
+Noise-pruned version of Qwen3.5-0.8B: 10% of low-importance weights removed via Wanda metric.
+
+| Metric | Baseline | Pruned (10%) | Change |
+|--------|----------|--------------|--------|
+| Params | {s[\"total_params_m\"]}M | {s[\"total_params_m\"]*0.9:.0f}M | -10% |
+| Noise detected | - | {noise_pct:.1f}% | - |
+| Perplexity | {base_ppl:.2f} | {pruned_ppl:.2f} | {ratio:.4f}x ({quality}) |
+
+Weights are scored as importance = |w| × column_norm (Wanda). Bottom 10% per output neuron are zeroed.
+'''
+api.upload_file(path_or_fileobj=card.encode(), path_in_repo='README.md', repo_id='KiriLabs/Qwen3.5-0.8B-NoisePruned')
+print('Done!')
+"
