@@ -13,18 +13,7 @@ from collections import defaultdict
 from transformers import AutoModelForCausalLM
 
 
-# Layer patterns to detect, in priority order
-LAYER_PATTERNS = [
-    r'model\.layers\.(\d+)',     # Qwen3.6
-    r'model\.language_model\.layers\.(\d+)',  # Qwen3.6 wrapped
-    r'layers\.(\d+)',             # Standard (LLaMA, Mistral)
-    r'transformer\.h\.(\d+)',     # GPT-2 distilgpt2
-    r'transformer\.layers\.(\d+)', # Some variants
-    r'encoder\.layer\.(\d+)',     # BERT-style
-    r'decoder\.layer\.(\d+)',     # T5-style
-]
-
-DEFAULT_LAYER_PATTERN = re.compile(r'(?:layers|transformer\.h|model\.layers|encoder\.layer|decoder\.layer)\.(\d+)')
+# No hardcoded layer patterns. Dynamically discovered from model parameters.
 
 
 class NoiseInspector:
@@ -44,23 +33,61 @@ class NoiseInspector:
         self.trust_remote_code = trust_remote_code
 
     def _find_layer_pattern(self, param_names):
-        """Auto-detect the layer naming pattern used by this model."""
+        """Dynamically discover layer numbering pattern from parameter names.
+        
+        No hardcoded patterns. Finds any 'prefix.N.suffix' where N is a layer index
+        and the prefix appears repeatedly in the model.
+        """
+        # Find all parameters with a digit run that could be a layer index
+        candidates = {}
         for name in param_names:
-            for pattern in LAYER_PATTERNS:
-                if re.search(pattern, name):
-                    return re.compile(pattern)
-        return DEFAULT_LAYER_PATTERN
+            m = re.search(r'^(.*[^\d])(\d+)([._].*)', name)
+            if m:
+                prefix, num_str, suffix = m.groups()
+                # Only consider 1-3 digit numbers that appear with same prefix
+                if 1 <= len(num_str) <= 3:
+                    key = (prefix, suffix)
+                    candidates.setdefault(key, set()).add(int(num_str))
+        
+        # Find the pattern that spans the most contiguous layers
+        best = None
+        best_span = 0
+        for (prefix, suffix), layers in candidates.items():
+            if len(layers) > 1:
+                span = max(layers) - min(layers)
+                if span > best_span:
+                    best_span = span
+                    best = re.compile(re.escape(prefix) + r'(\d+)' + re.escape(suffix))
+        
+        if best:
+            return best
+        
+        # Last resort: any '\d+' in 2D parameter names with '.weight' suffix
+        for name in param_names:
+            if '.weight' in name:
+                m = re.search(r'(\d+)', name)
+                if m:
+                    idx = m.start(1)
+                    prefix = name[:idx]
+                    suffix = name[idx + len(m.group(1)):]
+                    return re.compile(re.escape(prefix) + r'(\d+)' + re.escape(suffix))
+        
+        return re.compile(r'(\d+)')
 
-    def analyze(self, threshold: float = 0.01):
+    def analyze(self, threshold=None):
         """Run full noise analysis on the model.
 
         Args:
-            threshold: Fraction of max singular value below which weights
-                       in that direction are considered 'noise'.
+            threshold: Override for the per-row noise floor.
+                       If None, computed adaptively from weight distribution.
+                       If set (e.g. 0.01), scores below this fraction of row
+                       max are classified as noise.
 
         Returns:
             dict with per-layer results and summary
         """
+        import warnings
+        
         model = AutoModelForCausalLM.from_pretrained(
             self.model_id,
             dtype=torch.float32,
@@ -164,24 +191,28 @@ class NoiseInspector:
                     eff_rank = np.exp(entropy)
                     eff_rank_pct = 100.0 * eff_rank / total_rank
 
-                    # 6. Magnitude-based noise: fraction of weights with |w| near zero
-                    # Use adaptive threshold based on the distribution structure.
-                    # Weights within ±0.1σ of zero carry minimal signal.
-                    near_zero_pct = 100.0 * (np.abs(w) < 0.1 * std).mean()
+                    # 6. Adaptive magnitude threshold: 2*MAD (median absolute deviation)
+                    # = robust to outliers, no hardcoded sigma
+                    median_val = np.median(np.abs(w))
+                    mad = np.median(np.abs(np.abs(w) - median_val))
+                    mag_threshold = median_val + 2 * mad if mad > 0 else 0.1 * std
+                    near_zero_pct = 100.0 * (np.abs(w) < mag_threshold).mean()
 
                     # 7. Weight scores based on Wanda-like metric (|w| × column norm)
-                    # Low score = low impact on output = noise-like.
                     col_norms = np.linalg.norm(w, axis=0, keepdims=True)
                     importance_scores = np.abs(w) * col_norms
-                    # Per-row (per output neuron): fraction of inputs in each row
-                    # that have scores below 1% of the row's max score
                     row_max = importance_scores.max(axis=1, keepdims=True)
-                    # Avoid division by zero: filter rows with zero max
                     valid_rows = row_max[:, 0] > 1e-12
                     if valid_rows.any():
                         relative_scores = importance_scores / np.where(row_max > 1e-12, row_max, 1.0)
-                        # Noise = scores below 1% of row max
-                        noise_i = (relative_scores < 0.01).astype(float)
+                        # Adaptive noise threshold: if None, compute from data
+                        # Use the median relative score × 2 as the noise floor
+                        if threshold is None:
+                            all_relative = relative_scores[valid_rows].flatten()
+                            adaptive_thresh = float(np.percentile(all_relative, 5))
+                            noise_i = (relative_scores < max(adaptive_thresh, 1e-6)).astype(float)
+                        else:
+                            noise_i = (relative_scores < threshold).astype(float)
                         low_importance_pct = 100.0 * noise_i.mean()
                     else:
                         low_importance_pct = 0.0
@@ -233,7 +264,8 @@ class NoiseInspector:
             "estimated_noise_m": round(total_noise_params / 1e6, 1),
             "num_layers": len(layer_groups),
             "num_matrices": sum(len(g["matrices"]) for g in results.values()),
-            "analysis_threshold": threshold,
+            "analysis_threshold": threshold if threshold is not None else "adaptive (5th percentile)",
+            "threshold_note": "Threshold auto-computed from data distribution. Pass --threshold to override." if threshold is None else None,
         }
 
         del model

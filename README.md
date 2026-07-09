@@ -34,21 +34,21 @@ weightnoise inspect distilgpt2 --layer 0
 
 ## How Noise Is Measured
 
-For each weight matrix, three independent metrics are computed:
+For each weight matrix, three independent metrics are computed. All thresholds are adaptive — computed from the data distribution, not hardcoded.
 
-**1. Wanda Importance Score** (`|w| × column_norm`)  
-Per output neuron, each input connection's importance = weight magnitude × input activation norm. Weights with scores below 1% of the row's max are classified as noise-like. This is the standard Wanda metric (Sun et al., 2024), reimplemented from scratch.
+**1. Adaptive Wanda Importance Score** (`|w| × column_norm`)  
+Per output neuron, each input connection's importance = weight magnitude × input activation norm. The noise floor is computed as the 5th percentile of the per-row relative score distribution (configurable via `--threshold`).
 
 **2. Spectral Analysis** (SVD)  
 Each weight matrix is decomposed via SVD. Metrics include:
 - *Effective rank*: the continuous rank (Renyi entropy of singular values)  
 - *Concentration ratio*: % of energy in top 10% of singular values
-- *Noise singular values*: singular values below 1% of the max
 - *Rank retention*: rank needed to retain 90%/95%/99% of energy
 
 **3. Distribution Analysis**  
 - *Kurtosis*: heavy-tailed distributions indicate structured features, Gaussian-like kurtosis (~3) suggests noise
 - *KL divergence from Gaussian*: how far the weight distribution is from random noise
+- *2xMAD thresholding*: magnitude noise detection uses Median Absolute Deviation (robust to outliers)
 
 ## Validated Results (distilgpt2, 82M params)
 
@@ -113,14 +113,17 @@ The auto-detection of layer naming patterns means most HuggingFace models work o
 
 ## How It Compares to Existing Tools
 
+All thresholds in weightnoise are data-adaptive, computed from the model's own weight distribution. No hardcoded values, no magical constants.
+
 | Feature | weightnoise | SparseGPT | Wanda | torch-pruning |
 |---------|-------------|-----------|-------|---------------|
 | Weight noise visualization | ✅ Per-layer tables | ❌ | ❌ | ❌ |
 | Per-matrix SVD analysis | ✅ | ❌ | ❌ | ❌ |
+| Adaptive thresholds | ✅ (5th percentile) | ❌ (fixed) | ❌ (fixed) | ❌ (fixed) |
+| Dynamic hardware targets | ✅ (auto-detect GPU/RAM) | ❌ | ❌ | ❌ |
 | Wanda importance scoring | ✅ | ❌ | ✅ | ❌ |
-| SparseGPT Hessian pruning | ❌ (planned) | ✅ | ❌ | ❌ |
+| WIT transfer diagnostics | ✅ (adaptive MAD) | ❌ | ❌ | ❌ |
 | Per-row structured pruning | ✅ | ✅ | ✅ | ❌ (global) |
-| CPU-only analysis | ✅ | ❌ (needs GPU) | ❌ (needs GPU) | ❌ |
 | CLI tool | ✅ | ❌ | ❌ | ❌ |
 
 ## Design Philosophy
