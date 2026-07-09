@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weightnoise"
+version = "0.1.0"
+description = "Visualize and remove noise from neural network weights. Shows exactly which weights carry signal vs noise, with interactive visualization."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Kiri Labs"},
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "numpy>=1.24.0",
+    "rich>=13.0.0",
+    "huggingface-hub>=0.20.0",
+]
+keywords = ["neural-network", "pruning", "compression", "visualization", "noise"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.scripts]
+weightnoise = "weightnoise.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["weightnoise*"]

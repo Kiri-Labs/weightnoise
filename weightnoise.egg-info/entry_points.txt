@@ -1,0 +1,2 @@
+[console_scripts]
+weightnoise = weightnoise.__main__:main

@@ -1,0 +1,106 @@
+Metadata-Version: 2.4
+Name: weightnoise
+Version: 0.1.0
+Summary: Visualize and remove noise from neural network weights. Shows exactly which weights carry signal vs noise, with interactive visualization.
+Author: Kiri Labs
+License: MIT
+Keywords: neural-network,pruning,compression,visualization,noise
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers>=4.30.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: huggingface-hub>=0.20.0
+
+# weightnoise
+
+**Visualize and remove noise from neural network weights.**
+
+Most of the parameters in a large model are noise. `weightnoise` shows you exactly how much — per layer, per matrix, with clear visualizations. Then removes the noise for you.
+
+## Install
+
+```bash
+pip install weightnoise
+```
+
+No GPU required. Runs on CPU.
+
+## Usage
+
+### Inspect a model — see its noise profile
+
+```bash
+# Full report
+weightnoise inspect Qwen/Qwen3.5-0.8B
+
+# Single layer detail
+weightnoise inspect Qwen/Qwen3.5-0.8B --layer 5
+
+# Custom noise threshold
+weightnoise inspect microsoft/Phi-3-mini-4k-instruct --threshold 0.05
+```
+
+Output shows for each layer:
+- Mean, Std, Skew, Kurtosis of weight distribution
+- Signal-to-Noise Ratio (SNR)
+- KL divergence from Gaussian noise
+- Percentage of singular values below noise floor
+- Energy in noise vs signal
+- Compressibility estimate (rank needed for 99% energy retention)
+- Visual signal vs noise bar
+
+### Prune noise from a model
+
+```bash
+# Remove 50% of noise by magnitude (zero out smallest weights)
+weightnoise prune Qwen/Qwen3.5-0.8B --keep 0.5
+
+# Spectral pruning — keep only top singular values
+weightnoise prune Qwen/Qwen3.5-0.8B --method spectral --keep 0.3
+
+# Save pruned model
+weightnoise prune Qwen/Qwen3.5-0.8B --method magnitude --keep 0.5 --save --output ./pruned
+```
+
+## How It Works
+
+### Noise Detection
+
+Every weight matrix is analyzed through three lenses:
+
+1. **Distribution Analysis**: Does the weight distribution look like random noise (Gaussian around zero) or structured signal (skewed, multi-modal, heavy-tailed)? KL divergence from a best-fit Gaussian quantifies this.
+
+2. **Spectral Analysis**: SVD of each weight matrix reveals its singular value spectrum. Small singular values = noise directions. The noise floor (singular values < 1% of max) determines what's compressible.
+
+3. **Magnitude Analysis**: Small-magnitude weights (within noise band of the distribution) contribute minimally to output and can be zeroed.
+
+### Pruning Methods
+
+| Method | Approach | When to Use |
+|--------|----------|-------------|
+| `magnitude` | Zero out weights with smallest absolute value | Fast, reasonable baseline |
+| `spectral` | SVD truncation — reconstruct with only top-k singular values | Better structure preservation |
+| `wanda` | Weight × activation norm importance | Best quality, needs calibration data |
+
+## Why This Matters
+
+Frontier models are 100B+ parameters. Research (SparseGPT, Wanda, Lottery Ticket) suggests **50-90% of weights can be removed** without meaningful quality loss. That means a 100B model could run on consumer hardware.
+
+This tool makes that visible and actionable.
+
+## Related
+
+- [SparseGPT](https://github.com/IST-DASLab/sparsegpt) — One-shot pruning with Hessian information
+- [Wanda](https://github.com/locuslab/wanda) — Simple weight importance scoring
+- [Kiri Labs](https://github.com/Kiri-Labs) — Weight-space intelligence transfer research
+
+## License
+
+MIT
