@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weightnoise"
-version = "0.4.2"
+version = "0.5.0"
 description = "Visualize and remove noise from neural network weights. Shows exactly which weights carry signal vs noise, with interactive visualization."
 readme = "README.md"
 license = {text = "MIT"}
