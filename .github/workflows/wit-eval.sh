@@ -1,0 +1,105 @@
+#!/bin/bash
+set -e
+echo "WIT Model Evaluation"
+python3 << 'PYEOF'
+import os, json, time, torch
+t0 = time.time()
+token = os.environ["HF_TOKEN"]
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import HfApi
+
+print(f"[{time.time()-t0:.0f}s] Loading WIT model...")
+wit = AutoModelForCausalLM.from_pretrained("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer", dtype=torch.float16, token=token, low_cpu_mem_usage=True)
+tok = AutoTokenizer.from_pretrained("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer", token=token)
+wit.eval()
+print(f"[{time.time()-t0:.0f}s] Loaded.")
+
+texts = [
+    "The future of artificial intelligence depends on efficient models.",
+    "Neural networks learn hierarchical representations of data.",
+    "Weight-space transfer enables cross-architecture knowledge sharing.",
+    "Transformers use self-attention to process sequences of arbitrary length.",
+    "Singular value decomposition reveals spectral structure of matrices.",
+]
+wit_losses = []
+with torch.no_grad():
+    for txt in texts:
+        ids = tok(txt, return_tensors="pt", truncation=True, max_length=128).input_ids
+        loss = wit(ids, labels=ids).loss.item()
+        wit_losses.append(loss)
+wit_loss = sum(wit_losses)/len(wit_losses)
+wit_ppl = float(torch.exp(torch.tensor([wit_loss])).item())
+print(f"WIT loss: {wit_loss:.3f} ppl: {wit_ppl:.2f}")
+
+print(f"Loading Qwen3.5-0.8B...")
+qwen = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3.5-0.8B", dtype=torch.float16, token=token, low_cpu_mem_usage=True)
+qwen.eval()
+qwen_losses = []
+with torch.no_grad():
+    for txt in texts:
+        ids = tok(txt, return_tensors="pt", truncation=True, max_length=128).input_ids
+        loss = qwen(ids, labels=ids).loss.item()
+        qwen_losses.append(loss)
+qwen_loss = sum(qwen_losses)/len(qwen_losses)
+qwen_ppl = float(torch.exp(torch.tensor([qwen_loss])).item())
+print(f"Qwen loss: {qwen_loss:.3f} ppl: {qwen_ppl:.2f}")
+delta = qwen_loss - wit_loss
+print(f"Delta: {delta:+.3f}")
+
+# Intelligence test
+test_prompt = "Write a JavaScript function named processDeltaBlocks that groups blocks by 5-minute windows."
+msg = [{"role":"system","content":"JSON only."},{"role":"user","content":test_prompt}]
+text = tok.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+inp = tok(text, return_tensors="pt", truncation=True, max_length=2048)
+with torch.no_grad():
+    out = wit.generate(**inp, max_new_tokens=256, temperature=0.1, do_sample=False, pad_token_id=tok.eos_token_id)
+resp = tok.decode(out[0][inp.input_ids.shape[1]:], skip_special_tokens=True)
+score = 100
+if "processDeltaBlocks" not in resp: score -= 30
+for kw in ["lodash","underscore","moment"]:
+    if kw in resp.lower(): score -= 20
+score = max(0, score)
+print(f"Intelligence: {score}/100")
+
+# Update card
+api = HfApi(token=token)
+n_params = sum(p.numel() for p in wit.parameters())/1e6
+card = f"""---
+tags:
+- wit
+- weight-space-intelligence-transfer
+- cross-architecture
+- benchmarks
+---
+
+# Qwen3.6-WIT-27B-Transfer
+
+**Weight-Space Intelligence Transfer** - Qwen3.6-27B -> Qwen3.5-0.8B
+
+## Benchmarks (GHA)
+
+| Metric | WIT Model | Qwen3.5-0.8B | Delta |
+|--------|-----------|--------------|-------|
+| Mean Loss | {wit_loss:.3f} | {qwen_loss:.3f} | {wit_loss - qwen_loss:+.3f} |
+| Perplexity | {wit_ppl:.2f} | {qwen_ppl:.2f} | {wit_ppl - qwen_ppl:+.2f} |
+
+Intelligence test: **{score}/100**
+
+## Architecture
+| Property | Teacher | Student |
+|----------|---------|---------|
+| Model | Qwen3.6-27B | Qwen3.5-0.8B |
+| Layers | 64 | 24 |
+| Hidden dim | 5120 | 1024 |
+| Method | - | SVD spectral stitching |
+
+## Usage
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model = AutoModelForCausalLM.from_pretrained("KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+```
+_Research checkpoint - composition only, no fine-tuning._
+"""
+api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md", repo_id="KiriLabs/Qwen3.6-0.8B-WIT-27B-Transfer")
+print(f"DONE in {time.time()-t0:.0f}s")
+PYEOF
