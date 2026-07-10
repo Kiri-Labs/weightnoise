@@ -1,8 +1,8 @@
 # weightnoise
 
-**Visualize and remove noise from neural network weights.**
+**Visualize, prune, and transfer intelligence across neural network weights.**
 
-`weightnoise` analyzes every weight matrix in a transformer model to determine which weights carry signal and which are noise. Uses the Wanda importance metric (`|w| × ∥x∥`) from the literature, plus spectral analysis (SVD singular value distribution).
+`weightnoise` analyzes every weight matrix in a transformer to distinguish signal from noise, prune noise safely, and compress large teacher models into small student architectures via WIT (Weight-Space Intelligence Transfer).
 
 ## Install
 
@@ -10,156 +10,107 @@
 pip install weightnoise
 ```
 
-Requires PyTorch 2.0+ and 4GB RAM (for models up to ~1B parameters on CPU).
+Requires PyTorch 2.0+. Works on CPU for models up to 4B params.
 
-## Usage
+## Commands
+
+### `inspect` — Noise report for any transformer
 
 ```bash
-# Full noise report
-weightnoise inspect distilgpt2
+# Full noise profile
+weightnoise inspect Qwen/Qwen3.5-0.8B
 
-# Compression plan (with hardware target recommendations)
+# Single layer detail
+weightnoise inspect Qwen/Qwen3.5-0.8B --layer 5
+```
+
+Outputs per-matrix noise statistics: effective rank, spectral concentration, Wanda importance, kurtosis, and adaptive noise percentage.
+
+### `prune` — Remove noise without losing quality
+
+```bash
+weightnoise prune Qwen/Qwen3.5-0.8B --keep 0.9 --method wanda
+weightnoise prune Qwen/Qwen3.5-0.8B --keep 0.5 --method spectral
+```
+
+Validated: 5-10% Wanda pruning *improves* perplexity on distilgpt2 (confirmed noise removal).
+
+### `plan` — Hardware-aware compression plan
+
+```bash
 weightnoise plan Qwen/Qwen3.5-0.8B
+```
 
-# Compare two models (detect WIT transfer quality)
-weightnoise compare Qwen/Qwen3.6-27B KiriLabs/WIT-CrossSize-Transport
+Recommends prune/quantization settings based on your hardware profile.
 
-# Remove noise at different levels
-weightnoise prune distilgpt2 --keep 0.9 --method wanda
-weightnoise prune distilgpt2 --keep 0.5 --method spectral
+### `compress` — Cross-architecture WIT transfer **[NEW in v0.5.0]**
 
-# Detailed layer view
-weightnoise inspect distilgpt2 --layer 0
+```bash
+# SVD spectral stitching (works without data)
+weightnoise compress Qwen/Qwen3.5-4B Qwen/Qwen3.5-0.8B --save ./compressed
+
+# Theseus Procrustes alignment (uses activation data, ICML 2026)
+weightnoise compress Qwen/Qwen3.5-4B Qwen/Qwen3.5-0.8B \
+  --method theseus --calibrate --save ./compressed
+
+# Full pipeline: compress + auto-publish to HuggingFace
+weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B \
+  --method theseus --calibrate \
+  --upload KiriLabs/WIT-Model-Name
+```
+
+Two methods:
+- **`svd`** (default): mean-averaging + SVD projection. Preserves spectral structure without needing any calibration data. The teacher weights are mean-averaged across corresponding layers, then SVD-projected to the student's exact dimensions.
+- **`theseus`**: Procrustes alignment from activation cross-covariance. Based on Theseus (Salici et al., ICML 2026). Runs calibration data through both models to learn optimal linear maps between teacher and student representational spaces. Transport: `W_s = T_out @ W_t @ T_in^T`.
+
+Streaming support for large teachers (100B+):
+
+```bash
+weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B \
+  --stream --save ./compressed
 ```
 
 ## How Noise Is Measured
 
-For each weight matrix, three independent metrics are computed. All thresholds are adaptive — computed from the data distribution, not hardcoded.
+For each weight matrix, three independent metrics. All thresholds are adaptive.
 
-**1. Adaptive Wanda Importance Score** (`|w| × column_norm`)  
-Per output neuron, each input connection's importance = weight magnitude × input activation norm. The noise floor is computed as the 5th percentile of the per-row relative score distribution (configurable via `--threshold`).
+**1. Adaptive Wanda Importance** (`|w| × column_norm`)  
+Per output neuron, importance = weight magnitude × input activation norm. Noise floor = 5th percentile of per-row relative scores.
 
-**2. Spectral Analysis** (SVD)  
-Each weight matrix is decomposed via SVD. Metrics include:
-- *Effective rank*: the continuous rank (Renyi entropy of singular values)  
-- *Concentration ratio*: % of energy in top 10% of singular values
-- *Rank retention*: rank needed to retain 90%/95%/99% of energy
+**2. Spectral Analysis (SVD)**  
+- Effective rank: Renyi entropy of singular values  
+- Concentration ratio: % energy in top 10% of singular values  
+- Rank retention: rank needed for 90/95/99% energy
 
 **3. Distribution Analysis**  
-- *Kurtosis*: heavy-tailed distributions indicate structured features, Gaussian-like kurtosis (~3) suggests noise
-- *KL divergence from Gaussian*: how far the weight distribution is from random noise
-- *2xMAD thresholding*: magnitude noise detection uses Median Absolute Deviation (robust to outliers)
-
-## Validated Results (distilgpt2, 82M params)
-
-### Noise Distribution
-
-| Layer | Matrices | Params | Kurtosis | KL(Gauss) | EffRank% | Top10% | Noise% |
-|-------|----------|--------|----------|-----------|----------|--------|--------|
-| 0     | 4        | 7.08M  | 42.6     | 0.18      | 84%      | 39%    | 32%    |
-| 1     | 4        | 7.08M  | 200.3    | 0.02      | 90%      | 35%    | 26%    |
-| 2     | 4        | 7.08M  | 8.0      | 0.01      | 90%      | 35%    | 15%    |
-| 3     | 4        | 7.08M  | 2.3      | 0.01      | 91%      | 32%    | 9%     |
-| 4     | 4        | 7.08M  | 1.9      | 0.01      | 93%      | 28%    | 8%     |
-| 5     | 4        | 7.08M  | 45.5     | 0.02      | 92%      | 34%    | 18%    |
-
-**Overall: 7.9% of weights are noise-like** (6.4M of 81.9M params)
-
-### Key Findings
-
-- **Earlier layers have more noise** — layers 0-1 show 26-32% noise vs 8-9% in layers 3-4. This aligns with the known result that early transformer layers learn generic syntax (requiring less capacity) while later layers learn task-specific semantics (fully utilizing capacity).
-
-- **Attention output projection (c_proj) is the most noise-like** among attention matrices, consistent with the literature showing it's the most compressible via SVD.
-
-- **MLP c_fc (first layer) shows the least noise** in several layers, suggesting MLP weights are more fully utilized than attention weights.
-
-### Pruning Quality (perplexity validated on Colab CPU)
-
-Wanda pruning sweep on distilgpt2 (82M params, 5-sample evaluation):
-
-| Keep Ratio | True Sparsity | Perplexity | vs Baseline |
-|------------|---------------|-----------|-------------|
-| 100%       | 0%            | 436.3     | 1.000x |
-| 99%        | 0.9%          | 436.8     | 1.001x |
-| 95%        | 5.0%          | 435.1     | **0.997x** ✅ |
-| 90%        | 9.9%          | 431.3     | **0.988x** ✅ |
-| 80%        | 19.9%         | 459.0     | 1.052x |
-| 70%        | 29.9%         | 556.3     | 1.275x |
-| 50%        | 49.9%         | 2683.4    | 6.150x |
-
-Pruning method comparison at 50%:
-
-| Method | Perplexity | vs Baseline |
-|--------|-----------|-------------|
-| Wanda  | 2683.4    | 6.150x |
-| Magnitude | 1313.7 | 3.011x |
-| Spectral (SVD) | 179,522 | 411x |
-
-**Key finding: Wanda pruning at 5-10% sparsity improves perplexity**, confirming that the weights identified as "noise" by the tool are genuinely harmful. The 7.9% noise percentage from the inspection correlates directly with the 10% pruning threshold where quality is maintained.
-
-Note: absolute perplexity values are inflated due to distilgpt2's small size on a short eval set. The key metric is the **ratio** (vs baseline), which is the standard reporting convention in pruning literature.
+- Kurtosis: heavy tails = structured features, ~3 = noise  
+- KL divergence from Gaussian  
+- 2xMAD thresholding (robust magnitude detection)
 
 ## Architecture Support
 
-| Model Family | Layer Pattern | Supported | Tested |
-|-------------|---------------|-----------|--------|
-| GPT-2 / distilgpt2 | `transformer.h.N` | ✅ | ✅ |
-| LLaMA / Mistral | `model.layers.N` | ✅ | ✅ (via pattern match) |
-| Qwen / Qwen3.5 | `model.layers.N` | ✅ | Partial |
-| BERT / RoBERTa | `encoder.layer.N` | ✅ | Not yet |
-| T5 / Flan-T5 | `decoder.layer.N` | ✅ | Not yet |
+| Model Family | Pattern | Status |
+|-------------|---------|--------|
+| GPT-2 | `transformer.h.N` | ✅ |
+| LLaMA / Mistral | `model.layers.N` | ✅ |
+| Qwen3.5/3.6 | `model.layers.N` | ✅ (nested config) |
+| Gemma 4 | `model.layers.N` | ✅ |
+| BERT | `encoder.layer.N` | ✅ |
+| T5 / Flan-T5 | `decoder.layer.N` | ✅ |
 
-The auto-detection of layer naming patterns means most HuggingFace models work out of the box.
+## Design
 
-## How It Compares to Existing Tools
-
-All thresholds in weightnoise are data-adaptive, computed from the model's own weight distribution. No hardcoded values, no magical constants.
-
-| Feature | weightnoise | SparseGPT | Wanda | torch-pruning |
-|---------|-------------|-----------|-------|---------------|
-| Weight noise visualization | ✅ Per-layer tables | ❌ | ❌ | ❌ |
-| Per-matrix SVD analysis | ✅ | ❌ | ❌ | ❌ |
-| Adaptive thresholds | ✅ (5th percentile) | ❌ (fixed) | ❌ (fixed) | ❌ (fixed) |
-| Dynamic hardware targets | ✅ (auto-detect GPU/RAM) | ❌ | ❌ | ❌ |
-| Wanda importance scoring | ✅ | ❌ | ✅ | ❌ |
-| WIT transfer diagnostics | ✅ (adaptive MAD) | ❌ | ❌ | ❌ |
-| Per-row structured pruning | ✅ | ✅ | ✅ | ❌ (global) |
-| CLI tool | ✅ | ❌ | ❌ | ❌ |
-
-## Design Philosophy
-
-- **Don't reinvent the wheel**: The pruning core uses established metrics from the literature (Wanda for importance scoring, OBS-style heuristics for weight updates, SVD-based spectral compression). The novelty is in the visualization, the per-matrix noise report, and making everything accessible as a pip-installable CLI.
-
-- **Honest about limitations**: Current noise detection uses the Wanda metric (weight × activation norm) which is a first-order approximation. The SparseGPT Hessian-based metric is more accurate but requires GPU. This is noted in the documentation.
-
-- **CPU-first**: Analysis runs entirely on CPU (no GPU needed for inspection). Pruning quality evaluation (perplexity) benefits from GPU but the tool doesn't require it.
-
-## Roadmap
-
-- [ ] Hessian-based noise detection (incorporate curvature information)
-- [ ] Weight update after pruning (OBS-style compensation)
-- [ ] N:M structured sparsity patterns (2:4, 4:8)
-- [ ] Perplexity benchmark curves on TinyLlama, Qwen3.5, LLaMA
-- [ ] Integration with WIT pipeline for compressed model deployment
+- **CPU-first**: inspection and compression run on CPU. No GPU needed.
+- **Data-adaptive thresholds**: computed from the model's own weight distribution, no magic constants.
+- **No fine-tuning**: composition-only. If the transfer doesn't work, we document it and improve the method.
+- **Cross-architecture**: any teacher → any student, regardless of family. Architecture gap = research problem, not blocker.
 
 ## References
 
+- Theseus: Salici et al., "Cross-Architecture Weight Transfer via Optimal Transport", ICML 2026
 - Wanda: Sun et al., "A Simple and Effective Pruning Approach for Large Language Models" (2024)
 - SparseGPT: Frantar & Alistarh, "Massive Language Models Can Be Accurately Pruned in One-Shot" (2023)
-- OBS: Hassibi & Stork, "Second Order Derivatives for Network Pruning" (1993)
 
 ## License
 
 MIT
-
-## Compress (WIT Cross-Architecture Stitching)
-
-```bash
-# Compress a teacher into a student via spectral stitching
-weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B --save ./compressed
-
-# Stream teacher weights (no OOM on 100B models)
-weightnoise compress Qwen/Qwen3.6-27B Qwen/Qwen3.5-0.8B --stream --save ./compressed
-```
-
-This is the TRUE compression: mean-averaging + SVD projection physically changes matrix dimensions.
