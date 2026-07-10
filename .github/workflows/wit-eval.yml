@@ -1,5 +1,7 @@
 name: WIT Eval
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
