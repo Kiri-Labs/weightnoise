@@ -10,7 +10,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Install
-        run: pip install -q torch transformers huggingface_hub
+        run: |
+          pip install -q torch transformers huggingface_hub
+          pip install -e .
       - name: Run compact test
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
