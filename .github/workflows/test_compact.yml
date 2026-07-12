@@ -12,7 +12,7 @@ jobs:
       - name: Install
         run: |
           pip install -q torch transformers huggingface_hub
-          pip install -e .
+          pip install -e . --no-deps
       - name: Run compact test
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
