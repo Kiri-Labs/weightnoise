@@ -36,12 +36,14 @@ class SVDLinear(nn.Module):
         nn.init.normal_(self.Vt, std=0.01)
 
     def forward(self, x):
-        # Wx = U @ diag(S) @ Vt @ x  (without materializing full W)
-        vt_x = torch.mm(x, self.Vt.T)
+        # Handle arbitrary input dims (batch, ..., in_f) -> (batch, ..., out_f)
+        shape = x.shape[:-1]
+        x_flat = x.reshape(-1, x.shape[-1])
+        vt_x = torch.mm(x_flat, self.Vt.T)
         out = torch.mm(vt_x * self.S.unsqueeze(0), self.U.T)
         if self.bias is not None:
             out = out + self.bias
-        return out
+        return out.reshape(*shape, -1)
 
     def extra_repr(self):
         return f"in={self.in_features}, out={self.out_features}, k={self.k}"

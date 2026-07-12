@@ -31,6 +31,7 @@ short_texts = [
 
 def avg_loss(model, tok, texts, max_len=128):
     losses = []
+    model.eval()
     with torch.no_grad():
         for txt in texts:
             ids = tok(txt, return_tensors="pt", truncation=True, max_length=max_len).input_ids
@@ -54,8 +55,13 @@ def factorize_model(model, keep_ratio, method="svd-observe"):
             self.bias = nn.Parameter(torch.empty(out_f)) if bias else None
         
         def forward(self, x):
-            out = torch.mm(torch.mm(x, self.Vt.T) * self.S.unsqueeze(0), self.U.T)
-            return out + self.bias if self.bias is not None else out
+            # Handle arbitrary input dims (batch, ..., in_f) -> (batch, ..., out_f)
+            shape = x.shape[:-1]
+            x_flat = x.reshape(-1, x.shape[-1])
+            out = torch.mm(torch.mm(x_flat, self.Vt.T) * self.S.unsqueeze(0), self.U.T)
+            if self.bias is not None:
+                out = out + self.bias
+            return out.reshape(*shape, -1)
     
     conv_stats = {"before": 0, "after": 0, "converted": 0, "skipped": 0}
     
@@ -70,11 +76,11 @@ def factorize_model(model, keep_ratio, method="svd-observe"):
                 if stored < m * n:
                     W = child.weight.data.float()
                     U, S, Vt = torch.linalg.svd(W, full_matrices=False)
-                    k = len(S)
+                    k_total = len(S)
                     if method == "svd-observe":
                         sal = S ** 4
                         _, idx = sal.sort(descending=True)
-                        keep = torch.zeros(k, dtype=torch.bool)
+                        keep = torch.zeros(k_total, dtype=torch.bool)
                         keep[idx[:k_keep]] = True
                         kept = keep.nonzero(as_tuple=True)[0]
                         removed = (~keep).nonzero(as_tuple=True)[0]
@@ -87,7 +93,7 @@ def factorize_model(model, keep_ratio, method="svd-observe"):
                                 S_new[kept] += c * S[p] / (1 + c.abs().mean() + 1e-8)
                         U, S, Vt = U[:, kept], S_new[kept], Vt[kept, :]
                         k_keep = len(kept)
-                    
+
                     svd = SVDLinear(n, m, k_keep, bias=child.bias is not None)
                     svd.U.data = U[:, :k_keep]
                     svd.S.data = S[:k_keep]
