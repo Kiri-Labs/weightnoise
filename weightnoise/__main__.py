@@ -60,6 +60,20 @@ def main():
     prune_p.add_argument("--save", action="store_true",
                          help="Save pruned model to disk")
 
+    # ── compact ──
+    compact_p = sub.add_parser("compact", help="Factorize model via SVD (actually reduces file size)")
+    compact_p.add_argument("model", help="HF model ID or local path")
+    compact_p.add_argument("--keep-ratio", type=float, default=0.5,
+                           help="Fraction of singular values to keep (0.5 = half)")
+    compact_p.add_argument("--method", default="svd-observe",
+                           choices=["svd", "svd-observe"],
+                           help="SVD method")
+    compact_p.add_argument("--output", "-o", default=None, help="Output path")
+    compact_p.add_argument("--push-to-hub", default=None, help="HF repo to push compressed model")
+    compact_p.add_argument("--device", default="cpu", help="Device (cpu or cuda)")
+    compact_p.add_argument("--trust-remote-code", action="store_true",
+                           help="Trust remote code for custom architectures")
+
     args = parser.parse_args()
 
     # ── COMMAND: inspect ──
@@ -317,67 +331,43 @@ def main():
         if args.output:
             print(f"  Saved to: {args.output}")
 
+    # ── compact ──
+    elif args.command == "compact":
+        from .compress import compress_model
+        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
+        base = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            dtype=torch.float16,
+            device_map="auto" if args.device == "cuda" else None,
+            trust_remote_code=args.trust_remote_code,
+            low_cpu_mem_usage=True,
+        )
+        model, stats = compress_model(base, keep_ratio=args.keep_ratio, method=args.method)
+
+        print(f"\n  SVD Compact created:")
+        print(f"  Original params:   {stats['total_before']/1e6:.0f}M")
+        print(f"  Stored params:     {stats['total_after']/1e6:.0f}M")
+        print(f"  Compression:       {stats['cr']:.2f}x")
+        print(f"  Matrices converted: {stats['converted']}")
+        print(f"  Skipped (square):   {stats['skipped_square']}")
+
+        if args.output:
+            model.save_pretrained(args.output)
+            AutoTokenizer.from_pretrained(args.model).save_pretrained(args.output)
+            AutoConfig.from_pretrained(args.model).save_pretrained(args.output)
+            print(f"  Saved to: {args.output}")
+        if args.push_to_hub:
+            from huggingface_hub import create_repo
+            create_repo(args.push_to_hub, exist_ok=True, token=os.environ.get("HF_TOKEN"))
+            model.push_to_hub(args.push_to_hub, token=os.environ.get("HF_TOKEN"))
+            AutoTokenizer.from_pretrained(args.model).push_to_hub(args.push_to_hub, token=os.environ.get("HF_TOKEN"))
+            AutoConfig.from_pretrained(args.model).push_to_hub(args.push_to_hub, token=os.environ.get("HF_TOKEN"))
+            print(f"  Pushed to: https://huggingface.co/{args.push_to_hub}")
+
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
     main()
-    # ── compress ──
-    compress_p = sub.add_parser("compress", help="WIT compress teacher → student (cross-architecture)")
-    compress_p.add_argument("teacher", help="Large teacher model (HF ID)")
-    compress_p.add_argument("student", help="Small student model (HF ID)")
-    compress_p.add_argument("--save", "-o", default=None, help="Save compressed model path")
-    compress_p.add_argument("--stream", action="store_true",
-                            help="Stream teacher weights shard-by-shard (avoids OOM for 100B+ models)")
-    compress_p.add_argument("--method", default="svd", choices=["svd", "theseus"],
-                            help="WIT method: svd (no data) or theseus (needs calibration)")
-    compress_p.add_argument("--calibrate", action="store_true",
-                            help="Collect calibration activations for Theseus method")
-    compress_p.add_argument("--upload", default=None,
-                            help="HF repo name to upload results (e.g. KiriLabs/Model-Name)")
-    compress_p.add_argument("--device", default="cpu", help="Device (cpu or cuda)")
-    compress_p.add_argument("--trust-remote-code", action="store_true",
-                            help="Trust remote code for custom architectures")
-
-
-    # ── COMPRESS ──
-    elif args.command == "compress":
-        from .stitch import compress as stitch_compress
-
-        print(f"\n  WIT Compress: {args.teacher} → {args.student}")
-        print(f"  Method: {args.method}")
-
-        cal_texts = None
-        if args.calibrate:
-            print("  Using calibration texts for Theseus alignment...")
-            cal_texts = [
-                "The future of AI depends on efficient models that run locally.",
-                "Neural networks learn hierarchical representations of data.",
-                "Weight-space transfer enables knowledge sharing across architectures.",
-                "The singular value decomposition reveals the spectral structure of matrices.",
-                "Cross-architecture transfer is the key to democratizing frontier intelligence.",
-            ]
-
-        hf_token = os.environ.get("HF_TOKEN")
-
-        result = stitch_compress(
-            args.teacher, args.student,
-            device=args.device,
-            trust_remote_code=args.trust_remote_code,
-            save_path=args.save,
-            streaming=args.stream,
-            method=args.method,
-            calibration_texts=cal_texts,
-            upload_to_hf=args.upload,
-            hf_token=hf_token,
-        )
-
-        print(f"\n  Compression result:")
-        print(f"  Student params: {result['student_params_m']:.0f}M")
-        print(f"  Method: {result['method']}")
-        print(f"  Matrices stitched: {result['matrices_stitched']}")
-        if args.save:
-            print(f"  Saved to: {args.save}")
-        if args.upload:
-            print(f"  Uploaded to: https://huggingface.co/{args.upload}")
