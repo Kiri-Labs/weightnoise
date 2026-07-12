@@ -9,9 +9,7 @@ sys.stdout.reconfigure(line_buffering=True)
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Allow importing weightnoise from source
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+sys.path.insert(0, os.getcwd())
 from weightnoise.compress import compress_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
