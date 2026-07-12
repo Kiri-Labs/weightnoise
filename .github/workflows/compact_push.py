@@ -75,8 +75,14 @@ for name, mod in model.named_modules():
             svd.Vt.data = Vt
             if mod.bias is not None:
                 svd.bias.data = mod.bias.data
-            pn, cn = name.rsplit(".", 1)
-            setattr(model.get_submodule(pn), cn, svd)
+            # Parse parent name and child name
+            if "." in name:
+                pn, cn = name.rsplit(".", 1)
+            elif name:
+                pn = ""; cn = name
+            else:
+                continue  # skip root module
+            setattr(model.get_submodule(pn) if pn else model, cn, svd)
             stats["converted"] += 1
             stats["after_entries"] += k_act * (m + n)
         else:
