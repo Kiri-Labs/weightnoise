@@ -1,9 +1,10 @@
 """Pruning engine: remove noise from model weights.
 
-Implements three methods:
+Implements four methods:
   - magnitude: Zero out weights with smallest absolute values (baseline)
   - spectral: SVD truncation — keep only top-k singular values
   - wanda: Weight x activation norm importance (needs calibration data)
+  - svd-observe: OBS-compensated SVD truncation (arXiv:2606.23568)
 """
 import torch
 import numpy as np
@@ -47,6 +48,7 @@ class NoisePruner:
             method: 'magnitude' — zero out smallest weights
                     'spectral' — SVD truncation
                     'wanda' — weight x activation norm scoring
+                    'svd-observe' — OBS-compensated SVD truncation
             keep_ratio: Fraction of weights to keep (0.5 = keep 50%)
             threshold: Noise threshold for spectral method
             save_path: Path to save pruned model
@@ -114,7 +116,37 @@ class NoisePruner:
                         reconstructed = (U_k * S_k.unsqueeze(0)) @ Vh_k
                         param.data.copy_(reconstructed)
                     except Exception:
-                        # Fallback to row-wise magnitude pruning
+                        flat = w.abs()
+                        n_keep_per_row = max(1, int(w.shape[1] * keep_ratio))
+                        thresh = flat.kthvalue(max(1, w.shape[1] - n_keep_per_row), dim=1, keepdim=True).values
+                        param.data.copy_(w * (flat >= thresh))
+
+                elif method in ("svd-observe", "svd-surgeon"):
+                    # OBS-compensated SVD truncation (arXiv:2606.23568)
+                    k = min(m, n)
+                    k_keep = max(1, int(k * keep_ratio))
+                    try:
+                        U, S, Vt = torch.linalg.svd(w.float(), full_matrices=False)
+                        saliency = S ** 4
+                        _, sort_idx = saliency.sort(descending=True)
+                        keep_mask = torch.zeros(k, dtype=torch.bool)
+                        keep_mask[sort_idx[:k_keep]] = True
+
+                        S_new = S.clone()
+                        removed = (~keep_mask).nonzero(as_tuple=True)[0]
+                        kept = keep_mask.nonzero(as_tuple=True)[0]
+
+                        if len(removed) > 0:
+                            U_norm = U / (U.norm(dim=0, keepdim=True) + 1e-8)
+                            V_norm = Vt.T / (Vt.T.norm(dim=0, keepdim=True) + 1e-8)
+                            for p in removed:
+                                coupling = (U_norm[:, kept].T @ U_norm[:, p:p+1]).squeeze() * \
+                                          (V_norm[:, kept].T @ V_norm[:, p:p+1]).squeeze()
+                                S_new[kept] += coupling * S[p] / (1 + coupling.abs().mean() + 1e-8)
+
+                        reconstructed = (U * S_new.unsqueeze(0)) @ Vt
+                        param.data.copy_(reconstructed)
+                    except Exception:
                         flat = w.abs()
                         n_keep_per_row = max(1, int(w.shape[1] * keep_ratio))
                         thresh = flat.kthvalue(max(1, w.shape[1] - n_keep_per_row), dim=1, keepdim=True).values

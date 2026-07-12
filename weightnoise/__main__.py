@@ -50,7 +50,7 @@ def main():
                          help="Fraction of weights to keep (1.0 = none removed)")
     prune_p.add_argument("--method", default="wanda",
                          choices=None,
-                         help="Pruning method. Built-in: magnitude, spectral, wanda. "
+                         help="Pruning method. Built-in: magnitude, spectral, wanda, svd-observe. "
                               "Pass any string -- method plugins in development.")
     prune_p.add_argument("--threshold", type=float, default=0.01,
                          help="Noise threshold for spectral method")
