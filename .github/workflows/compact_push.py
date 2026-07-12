@@ -70,19 +70,14 @@ for name, mod in model.named_modules():
             U, S, Vt = factorize(mod.weight.data, 0.5)
             k_act = U.shape[1]
             svd = SVDLinear(n, m, k_act, bias=mod.bias is not None)
-            svd.U.data = U
-            svd.S.data = S
-            svd.Vt.data = Vt
+            svd.U.data = U.to(mod.weight.dtype)
+            svd.S.data = S.to(mod.weight.dtype)
+            svd.Vt.data = Vt.to(mod.weight.dtype)
             if mod.bias is not None:
                 svd.bias.data = mod.bias.data
-            # Parse parent name and child name
-            if "." in name:
-                pn, cn = name.rsplit(".", 1)
-            elif name:
-                pn = ""; cn = name
-            else:
-                continue  # skip root module
-            setattr(model.get_submodule(pn) if pn else model, cn, svd)
+            pn, cn = name.rsplit(".", 1) if "." in name else ("", name)
+            parent = model.get_submodule(pn) if pn else model
+            parent._modules[cn] = svd
             stats["converted"] += 1
             stats["after_entries"] += k_act * (m + n)
         else:
